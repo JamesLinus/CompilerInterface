@@ -149,12 +149,13 @@ void add_library_path(const char *path) {
 }
 
 void add_library(const char *lib) {
+	//fprintf(stderr, "function: add_library(%p<%s>)\n", lib, lib);
 	size_t len = strlen(lib);
 	if(strncmp(lib + len - 4, ".lib", 4) == 0) len -= 4;
 	char buffer[2 + len + 1];
 	strcpy(buffer, "-l");
 	memcpy(buffer + 2, lib, len);
-	buffer[len] = 0;
+	buffer[2 + len] = 0;
 	add_arg(buffer);
 }
 
@@ -281,8 +282,8 @@ int expend_command_line_from_file(/*const char *file*/) {
 	} while(*old_command_line);
 	*p = 0;
 
-	fprintf(stdout, "[stdout] old_command_line: \"%s\", program: \"%s\", new_command_line: \"%s\"\n", old_command_line, program, new_command_line);
-	fprintf(stderr, "[stderr] old_command_line: \"%s\", program: \"%s\", new_command_line: \"%s\"\n", old_command_line, program, new_command_line);
+	//fprintf(stdout, "[stdout] old_command_line: \"%s\", program: \"%s\", new_command_line: \"%s\"\n", old_command_line, program, new_command_line);
+	//fprintf(stderr, "[stderr] old_command_line: \"%s\", program: \"%s\", new_command_line: \"%s\"\n", old_command_line, program, new_command_line);
 	if(!CreateProcessA(program, new_command_line, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)) {
 		fprintf(stderr, "failed to restart %s, error %lu\n", program, GetLastError());
 		return 1;
@@ -346,7 +347,7 @@ int main(int argc, char **argv) {
 					} else {
 						if(!arg[5]) {
 no_arg:
-							fprintf(stderr, "%s: error: no argument specified with option '%s'",
+							fprintf(stderr, "%s: error: no argument specified with option '%s'\n",
 								argv[0], *v);
 							return 122;
 						}
@@ -358,7 +359,7 @@ no_arg:
 						if(strcasecmp(a, "no") == 0) {
 							add_arg("-Wl,--no-large-address-aware");
 						} else {
-							fprintf(stderr, "%s: error: syntax error in option '%s'",
+							fprintf(stderr, "%s: error: syntax error in option '%s'\n",
 								argv[0], *v);
 							return 93;
 						}
@@ -367,6 +368,23 @@ no_arg:
 					} else add_arg("-Wl,--large-address-aware");
 				} else if(strcasecmp(arg, "nologo") == 0) {
 					// Do nothing
+				} else if(strncasecmp(arg, "out", 3) == 0) {
+					__label__ no_arg;
+					// -Wl,--subsystem,
+					if(arg[3] == ':') {
+						const char *a = arg + 4;
+						if(!*a) goto no_arg; 
+						add_arg("-o");
+						add_arg(a);
+					} else {
+						if(!arg[3]) {
+no_arg:
+							fprintf(stderr, "%s: error: no argument specified with option '%s'\n",
+								argv[0], *v);
+							return 122;
+						}
+						while(1) UNRECOGNIZED_OPTION(*v);
+					}
 				} else if(strncasecmp(arg, "subsystem", 9) == 0) {
 					__label__ no_arg;
 					// -Wl,--subsystem,
@@ -381,7 +399,7 @@ no_arg:
 					} else {
 						if(!arg[9]) {
 no_arg:
-							fprintf(stderr, "%s: error: no argument specified with option '%s'",
+							fprintf(stderr, "%s: error: no argument specified with option '%s'\n",
 								argv[0], *v);
 							return 122;
 						}
@@ -441,7 +459,7 @@ no_arg:
 						case 'p':
 						case 'r':
 						case 'R':
-							fprintf(stderr, "%s: warning: '%s' is not supported", argv[0], *v);
+							fprintf(stderr, "%s: warning: '%s' is not supported\n", argv[0], *v);
 							break;
 						case 'I':
 							if(!arg[2]) {
@@ -564,6 +582,7 @@ no_arg:
 						default:
 							UNRECOGNIZED_OPTION(*v);
 					}
+					break;
 				case 'T':
 					switch(arg[1]) {
 						case 0:
@@ -634,7 +653,7 @@ no_arg:
 								add_arg("-Wextra");
 								break;
 							}
-							fprintf(stderr, "%s: error: invalid numeric argument '%s'", argv[0], *v);
+							fprintf(stderr, "%s: error: invalid numeric argument '%s'\n", argv[0], *v);
 							return 2;
 					}
 					break;
@@ -645,19 +664,19 @@ no_arg:
 							break;
 						case 'd':
 							if(!arg[2]) {
-								fprintf(stderr, "%s: error: '%s' requires an argument", argv[0], *v);
+								fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
 								return 2;
 							}
 							int n = atoi(arg + 2);
 							if(n < 0 || disable_warning_by_number(n) < 0) {
-								fprintf(stderr, "%s: warning: invalid value '%d' for '-wd'; assuming '4999'",
+								fprintf(stderr, "%s: warning: invalid value '%d' for '-wd'; assuming '4999'\n",
 									argv[0], n);
 								return 2;
 							}
 							break;
 						case 'e':
 							if(!arg[2]) {
-								fprintf(stderr, "%s: error: '%s' requires an argument", argv[0], *v);
+								fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
 								return 2;
 							}
 							fprintf(stderr, "%s: warning: '%s': %s\n", argv[0], *v, strerror(ENOSYS));
@@ -735,7 +754,7 @@ no_arg:
 					break;
 			}
 		} else {
-			(linker_option ? add_library : add_input_file)(*v);
+			(linker_option ? (strcmp(*v + strlen(*v) - 4, ".lib") == 0 ? add_library : add_input_file) : add_input_file)(*v);
 		}
 	}
 	if(!linker_option) {
@@ -779,8 +798,8 @@ no_arg:
 				output_file = p;
 			}
 		}
+		set_output_file(output_file);
 	}
-	set_output_file(output_file);
 	puts(cc_command_line);
 	return start_cc();
 	//return 0;
