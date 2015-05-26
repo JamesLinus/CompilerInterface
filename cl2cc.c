@@ -66,9 +66,19 @@ void add_arg(const char *arg) {
 }
 
 static int get_last_dot(const char *s, size_t len) {
-	while(--len) if(s[len] == '.') break;
+	while(--len) {
+		if(s[len] == '.') break;
+		if(s[len] == '/') return -1;
+	}
 	if(!len) return -1;
 	return len;
+}
+
+static int get_file_name(const char *s, size_t len) {
+	//int i = 0;
+	//while(s[i] != '/') if(i == len) return 0;
+	while(--len) if(s[len] == '/' || s[len] == '\\') break;
+	return len ? len + 1 : 0;
 }
 
 int start_cc() {
@@ -728,38 +738,46 @@ no_arg:
 			(linker_option ? add_library : add_input_file)(*v);
 		}
 	}
-	if(!first_input_file) {
-		fprintf(stderr, "%s: error: missing source filename\n", argv[0]);
-		return 2;
-	}
-	if(!output_file) {
-		size_t len = strlen(first_input_file);
-		int n = get_last_dot(first_input_file, len);
-		if(n >= 0) len = n;
-		char *p = malloc(len + 5);
-		if(!p) {
-			perror(argv[0]);
-			return 1;
+	if(!linker_option) {
+		if(!first_input_file) {
+			fprintf(stderr, "%s: error: missing source filename\n", argv[0]);
+			return 2;
 		}
-		memcpy(p, first_input_file, len);
-		strcpy(p + len, no_link ? ".obj" : ".exe");
-		output_file = p;
-		//set_output_file(p);
-	} else {
-		size_t orig_len = strlen(output_file);
-		if(output_file[orig_len - 1] == '/') {
-			size_t add_len = strlen(first_input_file);
-			int n = get_last_dot(first_input_file, add_len);
-			if(n >= 0) add_len = n;
-			char *p = malloc(orig_len + add_len + 5);
+		if(!output_file) {
+			size_t len = strlen(first_input_file);
+			int n = get_last_dot(first_input_file, len);
+			if(n >= 0) len = n;
+			char *p = malloc(len + 5);
 			if(!p) {
 				perror(argv[0]);
 				return 1;
 			}
-			memcpy(p, output_file, orig_len);
-			memcpy(p + orig_len, first_input_file, add_len);
-			strcpy(p + orig_len + add_len, no_link ? ".obj" : ".exe");
+			memcpy(p, first_input_file, len);
+			strcpy(p + len, no_link ? ".obj" : ".exe");
 			output_file = p;
+			//set_output_file(p);
+		} else {
+			size_t orig_len = strlen(output_file);
+			if(output_file[orig_len - 1] == '/') {
+				size_t add_len = strlen(first_input_file);
+				int n1 = get_file_name(first_input_file, add_len);
+				int n2 = get_last_dot(first_input_file, add_len);
+				if(n2 >= 0) add_len = n2;
+				if(n1 > 0) {
+					assert(n1 < add_len);
+					first_input_file += n1;
+					add_len -= n1;
+				}
+				char *p = malloc(orig_len + add_len + 5);
+				if(!p) {
+					perror(argv[0]);
+					return 1;
+				}
+				memcpy(p, output_file, orig_len);
+				memcpy(p + orig_len, first_input_file, add_len);
+				strcpy(p + orig_len + add_len, no_link ? ".obj" : ".exe");
+				output_file = p;
+			}
 		}
 	}
 	set_output_file(output_file);
