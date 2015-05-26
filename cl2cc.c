@@ -92,6 +92,20 @@ int start_cc() {
 	return r;
 }
 
+void define(const char *d) {
+	char buffer[2 + strlen(d) + 1];
+	strcpy(buffer, "-D");
+	strcpy(buffer + 2, d);
+	add_arg(buffer);
+}
+
+void undefine(const char *u) {
+	char buffer[2 + strlen(u) + 1];
+	strcpy(buffer, "-U");
+	strcpy(buffer + 2, u);
+	add_arg(buffer);
+}
+
 static void add_paths(const char *path_set, void (*add)(const char *)) {
 	char buffer[PATH_MAX + 1], *p = buffer;
 	do {
@@ -295,6 +309,7 @@ int main(int argc, char **argv) {
 
 	int no_link = 0;
 	int linker_option = 0;
+	//int output_file_seted = 0;
 	const char *output_file = NULL;
 	char **v = argv;
 	init_command_line();
@@ -372,12 +387,17 @@ no_arg:
 					no_link = 1;
 					break;
 				case 'D':
-					if(!arg[1]) {
-						fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
-						return 2;
+					if(arg[1]) {
+						if(**v != '-') **v = '-';
+						add_arg(*v);
+					} else {
+						const char *d = *++v;
+						if(!d) {
+							fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
+							return 2;
+						}
+						define(d);
 					}
-					if(**v != '-') **v = '-';
-					add_arg(*v);
 					break;
 				case 'E':
 					if(arg[1] && (arg[1] != 'P' || arg[2])) UNRECOGNIZED_OPTION(*v);
@@ -391,14 +411,18 @@ no_arg:
 							return 2;
 						case 'e':
 							if(no_link) break;
-							set_output_file(arg + 2);
+							//set_output_file(arg + 2);
+							//output_file_seted = 1;
+							output_file = arg + 2;
 							break;
 						case 'o':
 							if(!no_link) {
 								add_arg("-c");
 								no_link = 1;
 							}
-							set_output_file(arg + 2);
+							//set_output_file(arg + 2);
+							//output_file_seted = 1;
+							output_file = arg + 2;
 							break;
 						case 'a':
 						case 'A':
@@ -550,12 +574,17 @@ no_arg:
 					}
 					break;
 				case 'U':
-					if(!arg[1]) {
-						fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
-						return 2;
+					if(arg[1]) {
+						if(**v != '-') **v = '-';
+						add_arg(*v);
+					} else {
+						const char *d = *++v;
+						if(!d) {
+							fprintf(stderr, "%s: error: '%s' requires an argument\n", argv[0], *v);
+							return 2;
+						}
+						undefine(d);
 					}
-					if(**v != '-') **v = '-';
-					add_arg(*v);
 					break;
 				case 'u':
 					if(arg[1]) UNRECOGNIZED_OPTION(*v);
@@ -715,7 +744,25 @@ no_arg:
 		memcpy(p, first_input_file, len);
 		strcpy(p + len, no_link ? ".obj" : ".exe");
 		output_file = p;
+		//set_output_file(p);
+	} else {
+		size_t orig_len = strlen(output_file);
+		if(output_file[orig_len - 1] == '/') {
+			size_t add_len = strlen(first_input_file);
+			int n = get_last_dot(first_input_file, add_len);
+			if(n >= 0) add_len = n;
+			char *p = malloc(orig_len + add_len + 5);
+			if(!p) {
+				perror(argv[0]);
+				return 1;
+			}
+			memcpy(p, output_file, orig_len);
+			memcpy(p + orig_len, first_input_file, add_len);
+			strcpy(p + orig_len + add_len, no_link ? ".obj" : ".exe");
+			output_file = p;
+		}
 	}
+	set_output_file(output_file);
 	puts(cc_command_line);
 	return start_cc();
 	//return 0;
