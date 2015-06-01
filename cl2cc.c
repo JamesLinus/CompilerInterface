@@ -151,7 +151,7 @@ void add_library_path(const char *path) {
 void add_library(const char *lib) {
 	//fprintf(stderr, "function: add_library(%p<%s>)\n", lib, lib);
 	size_t len = strlen(lib);
-	if(strncmp(lib + len - 4, ".lib", 4) == 0) len -= 4;
+	if(strncasecmp(lib + len - 4, ".lib", 4) == 0) len -= 4;
 	char buffer[2 + len + 1];
 	strcpy(buffer, "-l");
 	memcpy(buffer + 2, lib, len);
@@ -174,7 +174,8 @@ void set_output_file(const char *file) {
 static void print_help() {
 	puts("libdll.so cl2cc " VERSION);
 	puts("Copyright 2015 libdll.so");
-	puts("This is free software; published under the GNU GPL, version 2 or later.");
+	puts("This is free software; you can redistribute it and/or modify it under");
+	puts("the terms of the GNU GPL, version 2 or later.");
 	puts("There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A");
 	puts("PARTICULAR PURPOSE.\n");
 
@@ -218,8 +219,7 @@ int disable_warning_by_number(unsigned int number) {
 }
 
 static int get_line_from_file(char *line, const char *file, size_t count) {
-	fprintf(stderr, "function: get_line_from_file(%p, %p<%s>, %u)\n", line, file, file, (unsigned int)count);
-	fprintf(stdout, "function: get_line_from_file(%p, %p<%s>, %u)\n", line, file, file, (unsigned int)count);
+	//fprintf(stderr, "function: get_line_from_file(%p, %p<%s>, %u)\n", line, file, file, (unsigned int)count);
 	fflush(stdout);
 	char buffer[count];
 	void *f = CreateFileA(file, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -496,7 +496,6 @@ no_arg:
 					add_arg("-funsigned-char");
 					break;
 				case 'L':
-					//if(!arg[1]) UNRECOGNIZED_OPTION(*v);
 					switch(arg[1]) {
 						//case 0:
 						//	UNRECOGNIZED_OPTION(*v);

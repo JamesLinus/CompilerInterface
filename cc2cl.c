@@ -335,7 +335,8 @@ void cl_help() {
 void version() {
 	puts("libdll.so cc2cl " VERSION);
 	puts("Copyright 2015 libdll.so");
-	puts("This is free software; published under the GNU GPL, version 2 or later.");
+	puts("This is free software; you can redistribute it and/or modify it under");
+	puts("the terms of the GNU GPL, version 2 or later.");
 	puts("There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A");
 	puts("PARTICULAR PURPOSE.");
 	exit(0);
