@@ -279,13 +279,13 @@ int expend_command_line_from_file(/*const char *file*/) {
 			int old_len = 0;
 			char file[PATH_MAX];
 			old_command_line++;
-			while(*old_command_line && *old_command_line != ' ' && *old_command_line != '	') {
+			while(*old_command_line && *old_command_line != ' ' && *old_command_line != '	' && *old_command_line != '\n') {
 				file[old_len++] = *old_command_line++;
 			}
 			file[old_len] = 0;
 			int new_len = get_line_from_file(p, file, free_len);
 			if(new_len < 0) {
-				fprintf(stderr, "failed to read command file %s, %lu\n", file, GetLastError());
+				fprintf(stderr, "failed to read command line file %s, %lu\n", file, GetLastError());
 				return 1;
 			}
 			p += new_len;

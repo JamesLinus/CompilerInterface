@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
+#include <ctype.h>
 #include <assert.h>
 
 #ifndef DEFAULT_OUTPUT_FILENAME
@@ -30,13 +31,13 @@
 #define VERSION "1.0"
 
 #ifdef _MALLOC_NO_ERRNO
-void *malloc1(size_t size) {
+static void *malloc1(size_t size) {
 	void *r = malloc(size);
 	if(!r) errno = ENOMEM;
 	return r;
 }
 
-void *realloc1(void *p, size_t size) {
+static void *realloc1(void *p, size_t size) {
 	void *r = realloc(p, size);
 	if(!r) errno = ENOMEM;
 	return r;
@@ -165,9 +166,6 @@ static int argv_to_command_line(char **argv, char *command_line, size_t buffer_s
 		if(command_line_len > buffer_size) return -1;
 		memcpy(p, *argv, len);
 		p[len] = '\"';
-		//if(!(p[len + 1] = *++argv ? ' ' : 0)) return 0;
-		//if(!*++argv) break;
-		//wcscat(p, L" ");
 	} while((p[len + 1] = *++argv ? ' ' : 0));
 	return 0;
 }
@@ -199,7 +197,7 @@ int start_cl() {
 		void *fh = CreateFileA(target.name, GENERIC_WRITE, FILE_SHARE_READ, &security_attr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 		if(fh == INVALID_HANDLE_VALUE) {
 			fprintf(stderr, "error: opening output file %s: CreateFileA failed, error %lu\n", target.name, GetLastError());
-			exit(1);
+			return 1;
 		}
 		si.hStdOutput = fh;
 		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
@@ -213,7 +211,7 @@ int start_cl() {
 			continue;
 		}
 		fprintf(stderr, "CreateProcessA failed, error %lu\n", GetLastError());
-		exit(127);
+		return 127;
 	}
 	unsigned long int r;
 	WaitForSingleObject(pi.hProcess, INFINITE);
@@ -248,7 +246,7 @@ int start_cl() {
 	}
 	if(WIFSIGNALED(status)) {
 		fprintf(stderr, "cl terminated with signal %d\n", WTERMSIG(status));
-		exit(WTERMSIG(status) + 126);
+		return WTERMSIG(status) + 126;
 	}
 	int r = WEXITSTATUS(status);
 #endif
@@ -260,10 +258,6 @@ int start_cl() {
 	if(n >= 0) len = n;
 	char out[len + 4 + 1];
 	memcpy(out, target.name, len);
-
-	//out[len] = 0;
-	//puts(target.name);
-	//puts(out);
 
 	assert(target.type == EXE || target.type == OBJ);
 	strcpy(out + len, target.type == EXE ? ".exe" : ".obj");
@@ -404,20 +398,47 @@ static struct option double_dash_long_options[] = {
 	{ "version", 0, version }
 };
 
-void add_include_path(const char *path) {
+void add_include_path(const char *path, int no_warning) {
+#if defined __INTERIX && !defined _NO_CONV_PATH
+	if(*path == '/') {
+		static char buffer[2 + PATH_MAX + 1] = { '-', 'I' };
+		if(unixpath2win(path, 0, buffer + 2, sizeof buffer - 2) == 0) {
+			add_to_argv(buffer);
+			return;
+		} else if(!no_warning) {
+			fprintf(stderr, "warning: cannot convert '%s' to Windows path name, %s\n", path, strerror(errno));
+		}
+	}
+#endif
 	char buffer[2 + strlen(path) + 1];
 	strcpy(buffer, "-I");
 	strcpy(buffer + 2, path);
 	add_to_argv(buffer);
 }
 
-void add_library_path(const char *path) {
+void add_library_path(const char *path, int no_warning) {
 	static char *llib;
 	const char *lib = getenv("LIB");
-	if(!lib) lib = "";
-	size_t old_path_len = strlen(lib);
+	char *old_path = lib ? strdup(lib) : (char *)"";
+	if(!old_path) {
+		perror(NULL);
+		abort();
+	}
+#if defined __INTERIX && !defined _NO_CONV_PATH
+	if(*path == '/') {
+		static char buffer[PATH_MAX + 1];
+		if(unixpath2win(path, 0, buffer, sizeof buffer) == 0) {
+			path = buffer;
+		} else if(!no_warning) {
+			fprintf(stderr, "warning: cannot convert '%s' to Windows path name, %s\n", path, strerror(errno));
+		}
+	}
+#endif
+	size_t old_path_len = strlen(old_path);
 	size_t new_path_len = strlen(path);
-	llib = realloc(llib, old_path_len + new_path_len + 2);
+	//llib = realloc(llib, 4 + new_path_len + 1 + old_path_len + 1);
+	free(llib);
+	llib = malloc(4 + new_path_len + 1 + old_path_len + 1);
 	if(!llib) {
 		perror(NULL);
 		abort();
@@ -426,7 +447,8 @@ void add_library_path(const char *path) {
 	memcpy(llib + 4, path, new_path_len);
 	if(old_path_len) {
 		llib[4 + new_path_len] = ';';
-		memcpy(llib + 4 + new_path_len + 1, path, old_path_len + 1);
+		memcpy(llib + 4 + new_path_len + 1, old_path, old_path_len + 1);
+		free(old_path);
 	} else llib[4 + new_path_len] = 0;
 	putenv(llib);
 }
@@ -650,15 +672,13 @@ int main(int argc, char **argv) {
 
 	int verbose = 0;
 	int no_link = 0;
-	int preprocess_only = 0;
-	//int have_input_file = 0;
+	int preprocess_only = -1;
+	int no_warning = -1;
 	int end_of_options = 0;
-	//const char *output_file = DEFAULT_OUTPUT_FILENAME;
 	const char *output_file = NULL;
 	char **v = argv;
 	init_argv();
 
-	int no_warning = -1;
 	const char *vs_path = getenv("VS_PATH");
 	if(!vs_path) vs_path = getenv("VSINSTALLDIR");
 	if(!getenv("INCLUDE")) {
@@ -747,15 +767,42 @@ first_loop:
 						}
 						break;
 					case 'g':
-						if(arg[1] && strcmp(arg + 1, "coff")) {
-							fprintf(stderr, "%s: error: unrecognised debug output level \"%s\"\n",
-								argv[0], arg + 1);
-							return 1;
+						// -g[coff][<level>] (level: 0~3)
+						if(arg[1]) {
+							const char *level = arg + 1;
+							if(strncmp(level, "coff", 4) == 0) level += 4;
+							if(*level && *level != '-') {
+								int i = 0;
+								do {
+									if(!isdigit(level[i])) {
+										fprintf(stderr, "%s: error: unrecognized debug output level \"%s\"\n",
+											argv[0], level);
+										return 1;
+									}
+								} while(level[++i]);
+								/*
+								if(i > 1 || *level > '3') {
+									fprintf(stderr, "%s: error: debug output level %s is too high\n",
+										argv[0], level);
+									return 1;
+								}
+								if(*level == '0') break;
+								*/
+								int l = atoi(level);
+								if(!l) break;
+								if(l > 3) {
+									fprintf(stderr, "%s: error: debug output level %s is too high\n",
+										argv[0], level);
+									return 1;
+								}
+							}
 						}
 						add_to_argv("-Zi");
 						break;
 					case 'I':
-						if(arg[1]) add_to_argv(*v);
+						if(no_warning == -1) no_warning = find_argv(argv, "-w");
+						//if(arg[1]) add_to_argv(*v);
+						if(arg[1]) add_include_path(arg + 1, no_warning);
 						else {
 							const char *path = *++v;
 							if(!path) {
@@ -763,11 +810,12 @@ first_loop:
 									argv[0]);
 								return 1;
 							}
-							add_include_path(path);
+							add_include_path(path, no_warning);
 						}
 						break;
 					case 'L':
-						if(arg[1]) add_library_path(arg + 1);
+						if(no_warning == -1) no_warning = find_argv(argv, "-w");
+						if(arg[1]) add_library_path(arg + 1, no_warning);
 						else {
 							const char *path = *++v;
 							if(!path) {
@@ -775,7 +823,7 @@ first_loop:
 									argv[0]);
 								return 1;
 							}
-							add_library_path(path);
+							add_library_path(path, no_warning);
 						}
 						break;
 					case 'l':
@@ -829,11 +877,11 @@ first_loop:
 						}
 						break;
 					case 'P':
+						if(preprocess_only == -1) preprocess_only = find_argv(argv, "-E");
 						if(preprocess_only) add_to_argv("-EP");
 						break;
 					case 's':
 						if(arg[1]) UNRECOGNIZED_OPTION(*v);
-						//add_to_argv("-Y-");
 						break;
 					case 'U':
 						if(arg[1]) add_to_argv(*v);
@@ -885,7 +933,6 @@ first_loop:
 							}
 							set_language(lang);
 						}
-						//if(!v[1])
 						break;
 					default:
 						fprintf(stderr, "%s: error: unrecognized option '%s'\n", argv[0], *v);
@@ -913,9 +960,10 @@ not_an_option:
 		}
 	}
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	if(last_language && last_language_unused) {
-		if(no_warning == -1) no_warning = find_argv(argv, "-w");
-		if(!no_warning) fprintf(stderr, "%s: warning: '-x %s' after last input file has no effect\n", argv[0], last_language);
+	if(preprocess_only == -1) preprocess_only = 0;
+	if(no_warning == -1) no_warning = 0;
+	if(last_language && last_language_unused && !no_warning) {
+		fprintf(stderr, "%s: warning: '-x %s' after last input file has no effect\n", argv[0], last_language);
 	}
 	if(!first_input_file) {
 		if(verbose) {
@@ -948,15 +996,13 @@ not_an_option:
 			memcpy(p, first_input_file, len);
 			strcpy(p + len, ".o");
 			output_file = p;
-			//char buffer[len + 3];
-			//memcpy(buffer, first_input_file, len);
-			//strcpy(buffer, ".o");
-			//set_output_file(buffer, no_link);
 		} else output_file = DEFAULT_OUTPUT_FILENAME;
 	}
 	if(!verbose) add_to_argv("-nologo");
-	if(output_file) set_output_file(output_file, no_link, no_warning);
-	if(preprocess_only) target.type = PREPROCESSED_SOURCE;
+	if(preprocess_only) {
+		if(output_file) target.name = output_file;
+		target.type = PREPROCESSED_SOURCE;
+	} else set_output_file(output_file, no_link, no_warning);
 	//if(no_static_link) add_to_argv("-MD");
 	add_to_argv(no_static_link ? "-MD" : "-MT");
 	add_libraries_to_argv();
