@@ -68,7 +68,7 @@ void add_arg(const char *arg) {
 static int get_last_dot(const char *s, size_t len) {
 	while(--len) {
 		if(s[len] == '.') break;
-		if(s[len] == '/') return -1;
+		if(s[len] == '/' || s[len] == '\\') return -1;
 	}
 	if(!len) return -1;
 	return len;
@@ -94,10 +94,16 @@ int start_cc() {
 		exit(127);
 	}
 	unsigned long int r;
-	WaitForSingleObject(pi.hProcess, INFINITE);
-	GetExitCodeProcess(pi.hProcess, &r);
-
-	//if(r || !target.name) return r;
+	if(WaitForSingleObject(pi.hProcess, INFINITE) == 0xffffffff) {
+		unsigned long int e = GetLastError();
+		fprintf(stderr, "WaitForSingleObject failed, error %lu\n", e);
+		return -e;
+	}
+	if(!GetExitCodeProcess(pi.hProcess, &r)) {
+		unsigned long int e = GetLastError();
+		fprintf(stderr, "GetExitCodeProcess failed, error %lu\n", e);
+		return -e;
+	}
 
 	return r;
 }
@@ -174,8 +180,8 @@ void set_output_file(const char *file) {
 static void print_help() {
 	puts("libdll.so cl2cc " VERSION);
 	puts("Copyright 2015 libdll.so");
-	puts("This is free software; you can redistribute it and/or modify it under");
-	puts("the terms of the GNU GPL, version 2 or later.");
+	puts("This is free software; you can redistribute it and/or modify it under the");
+	puts("terms of the GNU General Public License, version 2 or later.");
 	puts("There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A");
 	puts("PARTICULAR PURPOSE.\n");
 
@@ -263,6 +269,11 @@ int expend_command_line_from_file(/*const char *file*/) {
 	char new_command_line[BUFFER_SIZE], *p = new_command_line;
 	//if(!get_line_from_file(new_))
 	do {
+		int free_len = sizeof new_command_line - (p - new_command_line) - 1;
+		if(free_len < 1) {
+			fprintf(stderr, "command line too long");
+			return -1;
+		}
 		if(*old_command_line == '@') {
 			//int old_len = get_arg_len(old_command_line)
 			int old_len = 0;
@@ -272,7 +283,7 @@ int expend_command_line_from_file(/*const char *file*/) {
 				file[old_len++] = *old_command_line++;
 			}
 			file[old_len] = 0;
-			int new_len = get_line_from_file(p, file, sizeof new_command_line - (p - new_command_line) - 1);
+			int new_len = get_line_from_file(p, file, free_len);
 			if(new_len < 0) {
 				fprintf(stderr, "failed to read command file %s, %lu\n", file, GetLastError());
 				return 1;
@@ -318,6 +329,7 @@ int main(int argc, char **argv) {
 	const char *library_path = getenv("LIB");
 	if(library_path) add_paths(library_path, add_library_path);
 
+	int preprocess_to_file = 0;
 	int no_link = 0;
 	int linker_option = 0;
 	//int output_file_seted = 0;
@@ -370,7 +382,6 @@ no_arg:
 					// Do nothing
 				} else if(strncasecmp(arg, "out", 3) == 0) {
 					__label__ no_arg;
-					// -Wl,--subsystem,
 					if(arg[3] == ':') {
 						const char *a = arg + 4;
 						if(!*a) goto no_arg; 
@@ -582,6 +593,11 @@ no_arg:
 							UNRECOGNIZED_OPTION(*v);
 					}
 					break;
+				case 'P':
+					if(arg[1]) UNRECOGNIZED_OPTION(*v);
+					add_arg("-E");
+					preprocess_to_file = 1;
+					break;
 				case 'T':
 					switch(arg[1]) {
 						case 0:
@@ -742,7 +758,12 @@ no_arg:
 					} else if(strcmp(arg, "openmp") == 0) {
 						add_arg("-fopenmp");
 					} else if(strcmp(arg, "link") == 0) {
-						linker_option = 1;
+						linker_option = v - argv;
+						assert(linker_option > 0);
+						if(!first_input_file && linker_option > 1) {
+							fprintf(stderr, "%s: error: missing source filename\n", argv[0]);
+							return 2;
+						}
 					} else if(strcmp(arg, "showIncludes") == 0) {
 						add_arg("-M");
 					} else if(strcmp(arg, "nologo") == 0) {
@@ -756,22 +777,22 @@ no_arg:
 			(linker_option ? (strcmp(*v + strlen(*v) - 4, ".lib") == 0 ? add_library : add_input_file) : add_input_file)(*v);
 		}
 	}
-	if(!linker_option) {
+	if(linker_option != 1) {
 		if(!first_input_file) {
 			fprintf(stderr, "%s: error: missing source filename\n", argv[0]);
 			return 2;
 		}
-		if(!output_file) {
+		if(!output_file || preprocess_to_file) {
 			size_t len = strlen(first_input_file);
 			int n = get_last_dot(first_input_file, len);
 			if(n >= 0) len = n;
-			char *p = malloc(len + 5);
+			char *p = malloc(len + preprocess_to_file ? 3 : 5);
 			if(!p) {
 				perror(argv[0]);
 				return 1;
 			}
 			memcpy(p, first_input_file, len);
-			strcpy(p + len, no_link ? ".obj" : ".exe");
+			strcpy(p + len, preprocess_to_file ? ".i" : (no_link ? ".obj" : ".exe"));
 			output_file = p;
 			//set_output_file(p);
 		} else {
@@ -801,5 +822,4 @@ no_arg:
 	}
 	puts(cc_command_line);
 	return start_cc();
-	//return 0;
 }

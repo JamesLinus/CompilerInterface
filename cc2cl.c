@@ -10,6 +10,7 @@
 #include <windows.h>
 #else
 #include <sys/wait.h>
+#include <fcntl.h>
 #ifdef __INTERIX
 #include <interix/interix.h>
 #endif
@@ -85,7 +86,6 @@ void add_to_argv(const char *arg) {
 		perror(NULL);
 		abort();
 	}
-	//cl_argv[cl_argc - 1] = arg;
 	if(!(cl_argv[cl_argc - 1] = strdup(arg))) {
 		perror(NULL);
 		abort();
@@ -116,14 +116,17 @@ void print_argv() {
 }
 
 static int get_last_dot(const char *s, size_t len) {
-	//size_t n = len;
-	while(--len) if(s[len] == '.') break;
+	while(--len) {
+		if(s[len] == '.') break;
+		if(s[len] == '/' || s[len] == '\\') return -1;
+	}
 	if(!len) return -1;
 	return len;
 }
 
 #define EXE 1
 #define OBJ 2
+#define PREPROCESSED_SOURCE 3
 static struct {
 	const char *name;
 	unsigned int type;
@@ -187,8 +190,24 @@ int start_cl() {
 	char command_line[PATH_MAX * 2 + 1];
 	argv_to_command_line(cl_argv, command_line, sizeof command_line);
 	STARTUPINFOA si = { .cb = sizeof(STARTUPINFOA) };
+	if(target.type == PREPROCESSED_SOURCE && target.name) {
+		SECURITY_ATTRIBUTES security_attr = {
+			.nLength = sizeof(SECURITY_ATTRIBUTES),
+			.lpSecurityDescriptor = NULL,
+			.bInheritHandle = 1
+		};
+		void *fh = CreateFileA(target.name, GENERIC_WRITE, FILE_SHARE_READ, &security_attr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if(fh == INVALID_HANDLE_VALUE) {
+			fprintf(stderr, "error: opening output file %s: CreateFileA failed, error %lu\n", target.name, GetLastError());
+			exit(1);
+		}
+		si.hStdOutput = fh;
+		si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+		si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+		si.dwFlags |= STARTF_USESTDHANDLES;
+	}
 	PROCESS_INFORMATION pi;
-	while(!CreateProcessA(compiler, command_line, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)) {
+	while(!CreateProcessA(compiler, command_line, NULL, NULL, 1, 0, NULL, NULL, &si, &pi)) {
 		if(compiler) {
 			compiler = NULL;
 			continue;
@@ -207,6 +226,15 @@ int start_cl() {
 		abort();
 	}
 	if(pid == 0) {
+		if(target.type == PREPROCESSED_SOURCE && target.name) {
+			int fd = creat(target.name, 0666);
+			if(fd == -1) {
+				fprintf(stderr, "error: opening output file %s: %s\n", target.name, strerror(errno));
+				exit(1);
+			}
+			close(1);
+			dup2(fd, 1);
+		}
 		if(compiler) execvp(compiler, cl_argv);
 		execvp("cl", cl_argv);
 		perror("cl");
@@ -224,7 +252,7 @@ int start_cl() {
 	}
 	int r = WEXITSTATUS(status);
 #endif
-	if(r || !target.name) return r;
+	if(r || !target.name || target.type == PREPROCESSED_SOURCE) return r;
 	if(access(target.name, F_OK) == 0) return r;
 
 	size_t len = strlen(target.name);
@@ -335,8 +363,8 @@ void cl_help() {
 void version() {
 	puts("libdll.so cc2cl " VERSION);
 	puts("Copyright 2015 libdll.so");
-	puts("This is free software; you can redistribute it and/or modify it under");
-	puts("the terms of the GNU GPL, version 2 or later.");
+	puts("This is free software; you can redistribute it and/or modify it under the");
+	puts("terms of the GNU General Public License, version 2 or later.");
 	puts("There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A");
 	puts("PARTICULAR PURPOSE.");
 	exit(0);
@@ -516,6 +544,7 @@ int set_warning(const char *w) {
 }
 
 static const char *last_language;
+static int last_language_unused;
 
 void set_language(const char *lang) {
 	if(strcmp(lang, "none") == 0) {
@@ -527,28 +556,50 @@ void set_language(const char *lang) {
 		exit(1);
 	}
 	last_language = lang;
+	last_language_unused = 1;
 }
 
 static const char *first_input_file;
+static int multiple_input_files = 0;
 
 void add_input_file(char *file) {
-	if(!first_input_file) first_input_file = file;
+	if(first_input_file) multiple_input_files = 1;
+	else first_input_file = file;
 	if(last_language) {
 		char buffer[3 + strlen(file) + 1];
 		assert(strcmp(last_language, "c") == 0 || strcmp(last_language, "c++") == 0);
 		sprintf(buffer, "-T%c%s", last_language[1] ? 'p' : 'c', file);
 		add_to_argv(buffer);
-		//last_language = NULL;
+		last_language_unused = 0;
 		return;
 	}
 	if(*file == '/') *file = '\\';
 	add_to_argv(file);
 }
 
-void set_output_file(const char *file, int no_link) {
-	char buffer[3 + strlen(file) + 1];
-	sprintf(buffer, "-F%c%s", no_link ? 'o' : 'e', file);
-	add_to_argv(buffer);
+void set_output_file(const char *file, int no_link, int no_warning) {
+#if defined __INTERIX && !defined _NO_CONV_PATH
+	if(*file == '/') {
+		char buffer[3 + PATH_MAX + 1] = { '-', 'F', no_link ? 'o' : 'e' };
+		if(unixpath2win(file, 0, buffer + 3, sizeof buffer - 3) < 0) {
+			if(!no_warning) {
+				fprintf(stderr, "warning: cannot convert '%s' to Windows path name, %s\n", file, strerror(errno));
+			}
+			size_t len = strlen(file) + 1;
+			if(3 + len > sizeof buffer) {
+				fprintf(stderr, "error: %s: output file name too long\n", file);
+				exit(1);
+			}
+			memcpy(buffer + 3, file, len);
+		}
+		add_to_argv(buffer);
+	} else
+#endif
+	{
+		char buffer[3 + strlen(file) + 1];
+		sprintf(buffer, "-F%c%s", no_link ? 'o' : 'e', file);
+		add_to_argv(buffer);
+	}
 	target.name = file;
 	target.type = no_link ? OBJ : EXE;
 }
@@ -568,7 +619,7 @@ int main(int argc, char **argv) {
 					const char *a = o->arg ? *++v : argv[0];						\
 					if(o->arg && !a) {									\
 						fprintf(stderr, "%s: option '%s' need an argument\n", argv[0], *v);		\
-						return -1;									\
+						return 1;									\
 					}											\
 					if(o->act) o->act(a);									\
 					goto first_loop;									\
@@ -579,7 +630,7 @@ int main(int argc, char **argv) {
 					if(arg[len] && arg[len] != '=') continue;						\
 					if(!arg[len] || !arg[len + 1]) {							\
 						fprintf(stderr, "%s: option '%s' need an argument\n", argv[0], *v);		\
-						return -1;									\
+						return 1;									\
 					}											\
 					const char *a = arg + len + 1;								\
 					if(o->act) o->act(a);									\
@@ -593,7 +644,7 @@ int main(int argc, char **argv) {
 	do {									\
 		fprintf(stderr, "%s: error: unrecognized option '%s'\n",	\
 			argv[0], (O));						\
-		return -1;							\
+		return 1;							\
 	} while(0)
 
 
@@ -602,7 +653,8 @@ int main(int argc, char **argv) {
 	int preprocess_only = 0;
 	//int have_input_file = 0;
 	int end_of_options = 0;
-	const char *output_file = DEFAULT_OUTPUT_FILENAME;
+	//const char *output_file = DEFAULT_OUTPUT_FILENAME;
+	const char *output_file = NULL;
 	char **v = argv;
 	init_argv();
 
@@ -672,7 +724,7 @@ first_loop:
 							if(!d) {
 								fprintf(stderr, "%s: error: macro name missing after '-D'\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 							define(d);
 						}
@@ -709,7 +761,7 @@ first_loop:
 							if(!path) {
 								fprintf(stderr, "%s: error: option '-I' need an argument\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 							add_include_path(path);
 						}
@@ -721,7 +773,7 @@ first_loop:
 							if(!path) {
 								fprintf(stderr, "%s: error: option '-L' need an argument\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 							add_library_path(path);
 						}
@@ -733,7 +785,7 @@ first_loop:
 							if(!path) {
 								fprintf(stderr, "%s: error: option '-l' need an argument\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 							add_library(path);
 						}
@@ -772,7 +824,7 @@ first_loop:
 							if(!output_file) {
 								fprintf(stderr, "%s: error: option '-o' need an argument\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 						}
 						break;
@@ -790,7 +842,7 @@ first_loop:
 							if(!u) {
 								fprintf(stderr, "%s: error: macro name missing after '-U'\n",
 									argv[0]);
-								return -1;
+								return 1;
 							}
 							undefine(u);
 						}
@@ -820,6 +872,7 @@ first_loop:
 					case 'w':
 						if(arg[1]) UNRECOGNIZED_OPTION(*v);
 						add_to_argv("-w");
+						no_warning = 1;
 						break;
 					case 'x':
 						if(arg[1]) set_language(arg + 1);
@@ -836,14 +889,14 @@ first_loop:
 						break;
 					default:
 						fprintf(stderr, "%s: error: unrecognized option '%s'\n", argv[0], *v);
-						return -1;
+						return 1;
 				}
 			}
 		} else {
 not_an_option:
 #if defined __INTERIX && !defined _NO_CONV_PATH
 			if(**v == '/') {
-				char buffer[PATH_MAX];
+				char buffer[PATH_MAX + 1];
 				if(unixpath2win(*v, 0, buffer, sizeof buffer) == 0) {
 					add_input_file(buffer);
 				} else {
@@ -860,7 +913,7 @@ not_an_option:
 		}
 	}
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	if(last_language) {
+	if(last_language && last_language_unused) {
 		if(no_warning == -1) no_warning = find_argv(argv, "-w");
 		if(!no_warning) fprintf(stderr, "%s: warning: '-x %s' after last input file has no effect\n", argv[0], last_language);
 	}
@@ -873,25 +926,37 @@ not_an_option:
 		fprintf(stderr, "%s: no input files\n", argv[0]);
 		return 1;
 	}
-	if(no_link && !output_file) {
-		size_t len = strlen(first_input_file);
-		int n = get_last_dot(first_input_file, len);
-		if(n >= 0) len = n;
-		char *p = malloc(len + 3);
-		if(!p) {
-			perror(argv[0]);
-			return 1;
+	if(multiple_input_files && (preprocess_only || no_link)) {
+		if(output_file) {
+			fprintf(stderr, "%s: error: cannot specify -o with -c or -E with multiple files\n", argv[0]);
+			return 4;
+		} else if(no_link) {
+			fprintf(stderr, "%s: error: '-c' with multiple files is currently not supported\n", argv[0]);
+			return -1;
 		}
-		memcpy(p, first_input_file, len);
-		strcpy(p + len, ".o");
-		output_file = p;
-		//char buffer[len + 3];
-		//memcpy(buffer, first_input_file, len);
-		//strcpy(buffer, ".o");
-		//set_output_file(buffer, no_link);
+	}
+	if(!output_file && !preprocess_only) {
+		if(no_link) {
+			size_t len = strlen(first_input_file);
+			int n = get_last_dot(first_input_file, len);
+			if(n >= 0) len = n;
+			char *p = malloc(len + 3);
+			if(!p) {
+				perror(argv[0]);
+				return 1;
+			}
+			memcpy(p, first_input_file, len);
+			strcpy(p + len, ".o");
+			output_file = p;
+			//char buffer[len + 3];
+			//memcpy(buffer, first_input_file, len);
+			//strcpy(buffer, ".o");
+			//set_output_file(buffer, no_link);
+		} else output_file = DEFAULT_OUTPUT_FILENAME;
 	}
 	if(!verbose) add_to_argv("-nologo");
-	set_output_file(output_file, no_link);
+	if(output_file) set_output_file(output_file, no_link, no_warning);
+	if(preprocess_only) target.type = PREPROCESSED_SOURCE;
 	//if(no_static_link) add_to_argv("-MD");
 	add_to_argv(no_static_link ? "-MD" : "-MT");
 	add_libraries_to_argv();
